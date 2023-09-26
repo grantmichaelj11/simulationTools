@@ -12,9 +12,6 @@ import numpy as np
 import math
 from scipy import stats
 import os
-import warnings
-#Added until pd.append is replaced in code
-warnings.simplefilter(action='ignore', category=FutureWarning)
 
 def dump_file_to_dataframe(dumpfile, column_headers):
     
@@ -699,7 +696,6 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
 
     #Volume Fraction Determines number of Achiral beads
     A_type = int(monomers_per_chain * volume_fraction)
-    total_monomers = num_chains * monomers_per_chain
     
     #Box Dimensions
     total_volume = (num_chains * monomers_per_chain)/density
@@ -740,10 +736,8 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
             
             #Populate Atoms
             
-            
-            
             atom_type = 1 if monomer <= A_type else 2
-            atoms_data.append((monomers_per_chain * (chain - 1) + monomer, atom_type, chain, x, y, z, nx, ny, nz))
+            atoms_data.append((monomers_per_chain * (chain - 1) + monomer, chain, atom_type, x, y, z, nx, ny, nz))
             
             if monomer < A_type:
                 bonds_data.append((bond_number, 
@@ -758,21 +752,21 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
                                    monomers_per_chain * (chain - 1) + monomer + 1))
                 bond_number += 1
                 
-            elif A_type < monomer < monomers_per_chain:
+            elif monomer > A_type and monomer < (monomers_per_chain):
                 bonds_data.append((bond_number,
                                    1,
                                    monomers_per_chain * (chain - 1) + monomer,
                                    monomers_per_chain * (chain - 1) + monomer + 1))
                 bond_number += 1
             
-            if A_type < monomer < monomers_per_chain - 1:
+            if monomer > A_type and monomer < (monomers_per_chain-1):
                 angles_data.append((angle_number,
                                     1, monomers_per_chain * (chain - 1) + monomer,
                                     monomers_per_chain * (chain - 1) + monomer + 1,
                                     monomers_per_chain * (chain - 1) + monomer + 2))
                 angle_number += 1
             
-            if A_type < monomer < monomers_per_chain - 2:
+            if monomer > A_type and monomer < (monomers_per_chain-2):
                 dihedrals_data.append((dihedral_number,
                                        1,
                                        monomers_per_chain * (chain - 1) + monomer,
@@ -800,7 +794,7 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
         INPUT_FILE.write("\n")
         INPUT_FILE.write(" %16.8f %16.8f   xlo xhi\n" % (xlo, xhi))
         INPUT_FILE.write(" %16.8f %16.8f   ylo yhi\n" % (ylo, yhi))
-        INPUT_FILE.write(" %16.8f %16.8f   zlo zhi\n" % (zlo, zhi))
+        INPUT_FILE.write(" %16.8f %16.8f   zlo zhi\n\n" % (zlo, zhi))
 
         # Write Atoms
         INPUT_FILE.write("Atoms\n\n")
@@ -827,3 +821,4 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
         INPUT_FILE.write("%8i %3f\n" % (1, 1.0))
         INPUT_FILE.write("%8i %3f" % (2, 1.0))
         
+write_lammp_input_file('DPD_chiral.lammps', 100, 40, 1, 3, 0.345)

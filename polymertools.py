@@ -349,7 +349,7 @@ def create_block_average_results_log(df, burn_in, block_size, confidence_interva
         
     
 
-def create_block_average_results_dump(df, burn_in, block_size, confidence_interval):
+def create_block_average_results_dump(df, burn_in, block_size, confidence_interval, output_file = ''):
     
     """ 
     Takes a dataframe and conducts block averaging on each column in the frame
@@ -407,6 +407,9 @@ def create_block_average_results_dump(df, burn_in, block_size, confidence_interv
         data[column + "_error"] = np.array(errors_for_column)
         
         final_df = pd.DataFrame(data)
+        
+    if output_file != '':
+        final_df.to_csv(output_file, index=False)
         
     return final_df
 

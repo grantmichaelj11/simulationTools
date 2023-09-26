@@ -821,4 +821,3 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
         INPUT_FILE.write("%8i %3f\n" % (1, 1.0))
         INPUT_FILE.write("%8i %3f" % (2, 1.0))
         
-write_lammp_input_file('DPD_chiral.lammps', 100, 40, 1, 3, 0.345)

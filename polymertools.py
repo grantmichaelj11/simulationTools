@@ -11,7 +11,9 @@ import random
 import numpy as np
 import math
 from scipy import stats
+import scipy.signal as sc
 import os
+import csv
 
 def dump_file_to_dataframe(dumpfile, column_headers):
     
@@ -162,6 +164,8 @@ def log_file_to_dataframe(logfile, output_file=""):
                 continue
                 
             if in_thermo_block:
+                if line.startswith("WARNING"):
+                    continue
                 current_data.append(line.strip().replace("\n","").split())
     
     if output_file != '':
@@ -207,8 +211,8 @@ def unwrap_dataframe(df):
     """
     
     df['x'] += (df['xhi']-df['xlo']) * df['ix'].astype(float)
-    df['y'] += (df['yhi']-df['ylo']) * df['ix'].astype(float)
-    df['z'] += (df['zhi']-df['zlo']) * df['ix'].astype(float)
+    df['y'] += (df['yhi']-df['ylo']) * df['iy'].astype(float)
+    df['z'] += (df['zhi']-df['zlo']) * df['iz'].astype(float)
     
     return df.drop(['xlo', 'xhi', 'ylo', 'yhi', 'zlo', 'zhi', 'ix', 'iy', 'iz'], axis=1)
 
@@ -346,8 +350,6 @@ def create_block_average_results_log(df, burn_in, block_size, confidence_interva
     final_df = pd.DataFrame(data)
     
     return final_df
-        
-    
 
 def create_block_average_results_dump(df, burn_in, block_size, confidence_interval, output_file = ''):
     
@@ -531,9 +533,8 @@ def generate_master_csv_from_multiple(csv_folder, output_file):
 
     # Save the combined DataFrame to a master CSV file
     combined_df.to_csv(output_file, index=False)
-    
-    
-def extract_domain_spacing_trajectory_dataframe(df, bin_size=1, output_file=""):
+      
+def extract_domain_spacing_trajectory_dataframe(df, bin_size=0.1, output_file=""):
     
     """ 
     Extracts the z coordinates (according to bin size) and the relative densities
@@ -548,6 +549,8 @@ def extract_domain_spacing_trajectory_dataframe(df, bin_size=1, output_file=""):
         A DataFrame with "Density1", "Density2" "z" and optionally a csv corresponding
         to said dataframe
     """
+    
+    df = df[df['Timestep'] == df['Timestep'].unique()[-1]]
     
     #Sorts by z axis and then by type
     df = df.sort_values(['z','type']).reset_index()
@@ -592,7 +595,67 @@ def extract_domain_spacing_trajectory_dataframe(df, bin_size=1, output_file=""):
         final_frame.to_csv(output_file, index=False)
     
     return final_frame
+
+def extract_interfacial_width_from_domain_spacing(df, output_file = ''):
     
+    #Find the maximum of Type 1
+    #Find first z value that is less than 90% of that maximum
+    #Find the minimum of Type 1
+    #Find first z value that is greater than 10% of that minimum
+    
+    density = df['Density1'].array
+    z = df['z'].array
+    
+    max_value = np.max(density)
+    max_indicies = np.where(density == max_value)[0][0]
+    
+    min_value = np.min(density)
+    min_indicies = np.where(density == min_value)[0][0]
+    
+    #From the max value, iterate to the right until we find a value less than 90% of max
+    for i in range(max_indicies, len(z)):
+        if density[i] <= max_value*0.9:
+            z_90_max = z[i]
+            break
+    
+    
+    #From the min value, iterate to the left until we find a value greater than 10% of min
+    for i in range(0, min_indicies):
+        n = min_indicies - i
+        if min_value == 0:
+            if density[n] >= 0.1:
+                z_90_min = z[n]
+                break
+        else:
+            if density[n] >= 0.1*min_value:
+                z_90_min = z[n]
+                break
+            
+    data = []
+    with open(output_file, 'r', newline='') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            data.append(row)
+            
+    for row in data:
+        row['InterfacialWidth'] = abs(z_90_min - z_90_max)
+        break
+    
+    with open(output_file, 'w', newline='') as file:
+        field_names = list(data[0].keys())
+        writer = csv.DictWriter(file, fieldnames=field_names)
+        
+        writer.writeheader()
+        writer.writerows(data)
+    
+
+df = trj_file_to_dataframe('chiral_150.lammpstrj')
+df = unscale_dataframe(df)
+df = extract_domain_spacing_trajectory_dataframe(df, output_file='chiral150Domain.csv')
+df = extract_interfacial_width_from_domain_spacing(df, output_file='chiral150Domain.csv')
+
+
+   
 def generate_structure_factor(df, q_cutoff=3, output_file=''):
     """ 
     Returns the structure factors for a simulation of diblock copolymers. It is
@@ -660,7 +723,225 @@ def generate_structure_factor(df, q_cutoff=3, output_file=''):
         final_Qs.to_csv(output_file, encoding='utf-8', index=False)
     
     return final_Qs
-             
+
+def generate_structure_factor_all_frames(df_original, q_cutoff=3, output_file=''):
+    """ 
+    Returns the structure factors for a simulation of diblock copolymers. It is
+    important to note this is a very time intensive calculation and doing it over 
+    hundreds of frames could take upwards of a few days to complete. Therefore it is
+    highly adviseable to only run the structure factor calculation on the final frame
+    If error is required it should only be done over the last few frames in a simulation
+    
+    Currently only takes the last frame - will update to iterate over all frames
+    in a future version
+    """
+    
+    maxSq = []
+    timesteps = df_original['Timestep'].unique()
+    
+    for timestep in timesteps:
+        df = df_original.copy()
+        
+        df = df[(df['Timestep'] == timestep) & (df['type'] == 2.0)]
+
+        #Specifies box lengths
+        Lx = df['xhi'].unique()[0] - df['xlo'].unique()[0]
+        Ly = df['yhi'].unique()[0] - df['ylo'].unique()[0]
+        Lz = df['zhi'].unique()[0] - df['zlo'].unique()[0]
+    
+        #Unscales the coordinates
+        df = unscale_dataframe(df)
+        
+        #Creates wave vectors that will interact with structure
+        vectors = []
+        x_points = 2 * np.pi * np.arange(Lx) / Lx
+        y_points = 2 * np.pi * np.arange(Ly) / Ly
+        z_points = 2 * np.pi * np.arange(Lz) / Lz
+        
+        x, y, z = np.meshgrid(x_points, y_points, z_points, indexing='ij')
+        mags = np.linalg.norm(np.array([x, y, z]), axis=0)
+        
+        mask = (mags > 0) & (mags <= q_cutoff)
+        
+        vectors = np.column_stack((mags[mask], x[mask], y[mask], z[mask]))
+            
+        waves = pd.DataFrame(vectors, columns=['q','x', 'y', 'z'])
+    
+        #Using the wave vectors, calculate the structure factor
+        qs = []
+    
+        # Convert 'df' coordinates to a NumPy array for faster calculations
+        atom_coordinates = df[['x', 'y', 'z']].values
+        
+        for index, row in waves.iterrows():
+            q = row['q']
+            
+            if q not in qs:
+                q_array = np.array([row['x'], row['y'], row['z']])
+                dot_products = np.dot(q_array, atom_coordinates.T)
+                cos_sum = np.sum(np.cos(dot_products))
+                sin_sum = np.sum(np.sin(dot_products))
+                
+                sQ = (cos_sum ** 2 + sin_sum ** 2) / len(df)
+                
+                qs.append(sQ)
+                
+        maxSq.append(max(qs))
+        
+    # Convert the dictionary into a DataFrame
+    final_Qs = pd.DataFrame(maxSq, columns=['q'])
+        
+    if output_file != '':
+        final_Qs.to_csv(output_file, encoding='utf-8', index=False)
+        
+    return final_Qs
+
+def extract_pitch_from_trajectory_dataframe(df, monomer_type, output_file=''):
+
+    
+    chiral_chains = df[df['type'] == monomer_type].sort_values(['Timestep', 'mol', 'id']).drop(['type'], axis=1)
+    
+    chiral_chains['tx'] = chiral_chains.groupby('mol')['x'].diff()
+    chiral_chains['ty'] = chiral_chains.groupby('mol')['y'].diff()
+    chiral_chains['tz'] = chiral_chains.groupby('mol')['z'].diff()
+    
+    chiral_chains['tangent_distance'] = np.sqrt(chiral_chains['tx']**2 + chiral_chains['ty']**2 + chiral_chains['tz']**2)
+    
+    chiral_chains['utx'] = chiral_chains['tx'] / chiral_chains['tangent_distance']
+    chiral_chains['uty'] = chiral_chains['ty'] / chiral_chains['tangent_distance']
+    chiral_chains['utz'] = chiral_chains['tz'] / chiral_chains['tangent_distance']
+    
+    chiral_chains = chiral_chains.fillna(0)
+    
+    results = {'Timestep': [], 'Pitch': [], 'Monomers': []}
+    
+    for timestep in chiral_chains['Timestep'].unique():
+        
+        results['Timestep'].append(timestep)
+        
+        current_frame = chiral_chains[chiral_chains['Timestep'] == timestep]
+        
+        pitches = []
+        monomers_per_pitch_list = []
+        
+        for mol_id, group in current_frame.groupby('mol'):
+            
+            molecule = current_frame[current_frame['mol'] == mol_id]
+            
+            bead_location = np.zeros(len(molecule)-1)
+            distance_location = np.zeros(len(molecule)-1)
+            s_counter = np.zeros(len(molecule)-1)
+            peaks = []
+            
+            for i in range(len(molecule)-1):
+                
+                tangent_index_i = i+1
+                t0 = [molecule['utx'].iloc[tangent_index_i],
+                      molecule['uty'].iloc[tangent_index_i],
+                      molecule['utz'].iloc[tangent_index_i]]
+                
+                atom1 = np.array([molecule['x'].iloc[i], molecule['y'].iloc[i], molecule['z'].iloc[i]])
+                
+                for n in range(i, len(molecule)-1):
+                    
+                    atomN = np.array([molecule['x'].iloc[n], molecule['y'].iloc[n], molecule['z'].iloc[n]])
+                    
+                    distance = np.sqrt(sum((atomN-atom1)**2))
+                    
+                    tn = [molecule['utx'].iloc[n],
+                          molecule['uty'].iloc[n],
+                          molecule['utz'].iloc[n]]
+                    
+                    s = n-i
+                    
+                    dot = np.dot(t0, tn)
+                    bead_location[s] += dot
+                    s_counter[s] += 1 
+                    distance_location[s] += distance
+            
+            bead_location /= s_counter
+            distance_location /= s_counter
+
+            peaks, _ = sc.find_peaks(bead_location)
+            
+            if len(peaks) < 2:
+                continue
+            
+            distances = distance_location[peaks]
+            
+            monomers_per_pitch_list.append(peaks[1])
+            pitches.append(distances[1])
+        
+        pitch = np.mean(pitches)
+        monomers_per_pitch = np.mean(monomers_per_pitch_list)
+        
+        results['Pitch'].append(pitch)
+        results['Monomers'].append(monomers_per_pitch)
+        
+    results_df = pd.DataFrame(results)
+    
+    if output_file != '':
+        results_df.to_csv(output_file, encoding='utf-8', index=False)
+        
+    return results_df
+
+def calculate_chiral_nematic_ordering(df, monomer_type, output_file):
+    df = df[df['type']==monomer_type].drop('type',axis=1)
+    
+    timesteps = df['Timestep'].unique()
+    
+    for timestep in timesteps[-1:]:
+        
+        current_step = df[df['Timestep']==timestep]
+        
+        for mol_id, molecule_frame in current_step.groupby('mol'):
+            
+            centers = []
+            
+            for iteration in range(0, len(molecule_frame)-3):
+                
+                residue = molecule_frame.iloc[iteration:iteration+4]
+                
+                atom1 = residue.iloc[0]
+                atom2 = residue.iloc[1]
+                atom3 = residue.iloc[2]
+                atom4 = residue.iloc[3]
+                
+                #Calculate Torsion via Forward Difference Method
+                torsion_r1 = np.array([atom2['x'] - atom1['x'], 
+                                       atom2['y'] - atom1['y'],
+                                       atom2['z'] - atom1['z']])
+                
+                torsion_r1 /= np.linalg.norm(torsion_r1)
+                
+                torsion_r2 = np.array([atom3['x'] - 2*atom2['x'] + atom1['x'],
+                                       atom3['y'] - 2*atom2['y'] + atom1['y'],
+                                       atom3['z'] - 2*atom2['z'] + atom1['z']])
+                
+                torsion_r2 /= np.square(np.linalg.norm(torsion_r2))
+                
+                torsion_r3 = np.array([atom4['x']-3*atom3['x']+3*atom2['x']-atom1['x'],
+                                       atom4['y']-3*atom3['y']+3*atom2['y']-atom1['y'],
+                                       atom4['z']-3*atom3['z']+3*atom2['z']-atom1['z']])
+                
+                torsion_r3 /= np.linalg.norm(torsion_r3)**3
+                
+                torsion = np.dot(np.cross(torsion_r1, torsion_r2), torsion_r3) / np.linalg.norm(np.cross(torsion_r1, torsion_r2))**2
+                
+                #Calculate Curvature for first 3 points
+                
+                curvature = np.linalg.norm(np.cross(torsion_r1, torsion_r2)) / np.linalg.norm(torsion_r1)**3
+                
+                #Calculate Radius
+                
+                radius = curvature / (curvature**2 + torsion**2)
+                
+                #Can we find the centroid
+                
+                break
+                
+            break
+
 def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, density, volume_fraction):
     
     """ 
@@ -824,3 +1105,8 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
         INPUT_FILE.write("%8i %3f\n" % (1, 1.0))
         INPUT_FILE.write("%8i %3f" % (2, 1.0))
         
+
+
+
+
+

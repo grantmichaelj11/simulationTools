@@ -11,6 +11,7 @@ import random
 import numpy as np
 import math
 from scipy import stats
+from scipy.linalg import eigh
 import scipy.signal as sc
 import os
 import csv
@@ -647,13 +648,6 @@ def extract_interfacial_width_from_domain_spacing(df, output_file = ''):
         
         writer.writeheader()
         writer.writerows(data)
-    
-
-df = trj_file_to_dataframe('chiral_150.lammpstrj')
-df = unscale_dataframe(df)
-df = extract_domain_spacing_trajectory_dataframe(df, output_file='chiral150Domain.csv')
-df = extract_interfacial_width_from_domain_spacing(df, output_file='chiral150Domain.csv')
-
 
    
 def generate_structure_factor(df, q_cutoff=3, output_file=''):
@@ -812,10 +806,11 @@ def extract_pitch_from_trajectory_dataframe(df, monomer_type, output_file=''):
     chiral_chains['utz'] = chiral_chains['tz'] / chiral_chains['tangent_distance']
     
     chiral_chains = chiral_chains.fillna(0)
+    timesteps = chiral_chains['Timestep'].unique()
     
-    results = {'Timestep': [], 'Pitch': [], 'Monomers': []}
+    results = {'Timestep': [], 'Pitch': [], 'Monomers': [], 'PersistenceLength': [], 'MonomersLP': []}
     
-    for timestep in chiral_chains['Timestep'].unique():
+    for timestep in timesteps:
         
         results['Timestep'].append(timestep)
         
@@ -823,6 +818,8 @@ def extract_pitch_from_trajectory_dataframe(df, monomer_type, output_file=''):
         
         pitches = []
         monomers_per_pitch_list = []
+        persistence_lengths = []
+        monomers_lp = []
         
         for mol_id, group in current_frame.groupby('mol'):
             
@@ -862,21 +859,55 @@ def extract_pitch_from_trajectory_dataframe(df, monomer_type, output_file=''):
             bead_location /= s_counter
             distance_location /= s_counter
 
-            peaks, _ = sc.find_peaks(bead_location)
+            peaks, _ = sc.find_peaks(bead_location, height=0)
             
-            if len(peaks) < 2:
+            if len(peaks) < 4:
                 continue
             
             distances = distance_location[peaks]
             
             monomers_per_pitch_list.append(peaks[1])
             pitches.append(distances[1])
-        
+            
+            #Take the log of the tangent vectors
+            peak_table = {"Location": peaks,
+                          'Avg Distance': [distance_location[i] for i in peaks],
+                          'Avg Tan': [bead_location[i] for i in peaks]}
+            
+            peak_table = pd.DataFrame(peak_table)
+
+            peak_table.loc[len(peak_table.index)] = [0,0,1]
+            peak_table = peak_table.sort_values('Location')
+            peak_table.reset_index(drop=True, inplace=True)
+
+            peak_table['ln Tan'] = np.log(peak_table['Avg Tan'].abs())
+
+            try:
+                peak_fit = np.polyfit(peak_table['Location'], peak_table['ln Tan'], 1)
+
+            except np.linalg.LinAlgError:
+                continue
+
+            s_lp = -1/peak_fit[0]
+
+            if s_lp > 0:
+                monomers_lp.append(s_lp)
+                x = np.arange(0, len(molecule)-1,1)
+                fit = np.polyfit(x, distance_location,1)
+                lp = s_lp * fit[0] + fit[1]
+                monomers_lp.append(s_lp)
+                persistence_lengths.append(lp)
+
+
         pitch = np.mean(pitches)
         monomers_per_pitch = np.mean(monomers_per_pitch_list)
-        
+        persistence_length = np.mean(persistence_lengths)
+        monomers_per_persistence = np.mean(monomers_lp)
+
         results['Pitch'].append(pitch)
         results['Monomers'].append(monomers_per_pitch)
+        results['PersistenceLength'].append(persistence_length)
+        results['MonomersLP'].append(monomers_per_persistence)
         
     results_df = pd.DataFrame(results)
     
@@ -884,6 +915,77 @@ def extract_pitch_from_trajectory_dataframe(df, monomer_type, output_file=''):
         results_df.to_csv(output_file, encoding='utf-8', index=False)
         
     return results_df
+
+def calculate_nematic_ordering(df, monomer_type, output_file=''):
+    df = df[df['type']==monomer_type].drop('type',axis=1)
+    
+    timesteps = df['Timestep'].unique()
+
+    results = {'Timesteps': timesteps, 'Order_Parameter': []}
+
+    for timestep in timesteps:
+
+        end_to_end_vectors = []
+
+        current_step = df[df['Timestep']==timestep]
+
+        for mol_id, molecule_frame in current_step.groupby(['mol']):
+
+            molecule_data = molecule_frame.sort_values(by='id')
+
+            chain_start = molecule_data.iloc[0]
+            chain_end = molecule_data.iloc[-1]
+
+            end_to_end_vector = [chain_end['x'] - chain_start['x'],
+                                 chain_end['y'] - chain_start['y'],
+                                 chain_end['z'] - chain_start['z']]
+            
+            mag = np.linalg.norm(end_to_end_vector)
+
+            unit_vector = end_to_end_vector/mag
+
+            end_to_end_vectors.append(unit_vector)
+
+        nematic_matrix = np.zeros((3,3))
+        N = len(end_to_end_vectors)
+
+        for array in end_to_end_vectors:
+        
+            x = array[0]
+            y = array[1]
+            z = array[2]
+            
+            nematic_matrix[0, 0] += x*x/N
+            nematic_matrix[0, 1] += x*y/N
+            nematic_matrix[0, 2] += x*z/N
+            nematic_matrix[1, 0] += y*x/N
+            nematic_matrix[1, 1] += y*y/N
+            nematic_matrix[1, 2] += y*z/N
+            nematic_matrix[2, 0] += z*x/N
+            nematic_matrix[2, 1] += z*y/N
+            nematic_matrix[2, 2] += z*z/N
+        
+        nematic_matrix[0, 0] = 0.5*((3*nematic_matrix[0, 0])-1)
+        nematic_matrix[0, 1] = 0.5*(3* nematic_matrix[0, 1])
+        nematic_matrix[0, 2] = 0.5*(3*nematic_matrix[0, 2])
+        nematic_matrix[1, 0] = 0.5*(3*nematic_matrix[1, 0])
+        nematic_matrix[1, 1] = 0.5*((3*nematic_matrix[1, 1])-1)
+        nematic_matrix[1, 2] = 0.5*(3*nematic_matrix[1, 2])
+        nematic_matrix[2, 0] = 0.5*(3*nematic_matrix[2, 0])
+        nematic_matrix[2, 1] = 0.5*(3*nematic_matrix[2, 1])
+        nematic_matrix[2, 2] = 0.5*((3*nematic_matrix[2, 2])-1)
+            
+        eigenvalues, eigenvectors = eigh(nematic_matrix)
+        order_parameter = max(eigenvalues.real)
+    
+        results['Order_Parameter'].append(order_parameter)
+
+    final_df = pd.DataFrame(results)
+
+    if output_file != '':
+        final_df.to_csv(output_file, encoding='utf-8', index=False)
+
+    return final_df
 
 def calculate_chiral_nematic_ordering(df, monomer_type, output_file):
     df = df[df['type']==monomer_type].drop('type',axis=1)

@@ -217,6 +217,58 @@ def unwrap_dataframe(df):
     
     return df.drop(['xlo', 'xhi', 'ylo', 'yhi', 'zlo', 'zhi', 'ix', 'iy', 'iz'], axis=1)
 
+
+def calculate_Ree(df, monomer_type=2, output_file=""):
+
+    """
+    Calculates the end to end distance of a block within a polymer (if it is a homopolymer then the entire chain will be calculated)
+
+    Arguments:
+        dataframe (DataFrame): pandas dataframe that contains the trajectory - needs to be unscaled and unwrapped
+
+    Returns:
+        A dataframe consisting of timestep and end to end distance.
+
+    """
+    
+    df = df[df['type']==monomer_type].drop('type',axis=1)
+    
+    timesteps = df['Timestep'].unique()
+
+    results = {'Timesteps': timesteps, 'Ree': []}
+
+    for timestep in timesteps:
+
+        current_step = df[df['Timestep']==timestep]
+
+        Rees = []
+
+        for mol_id, molecule_frame in current_step.groupby(['mol']):
+
+            molecule_data = molecule_frame.sort_values(by='id')
+
+            chain_start = molecule_data.iloc[0]
+            chain_end = molecule_data.iloc[-1]
+
+            end_to_end_vector = [chain_end['x'] - chain_start['x'],
+                                 chain_end['y'] - chain_start['y'],
+                                 chain_end['z'] - chain_start['z']]
+            
+            mag = np.linalg.norm(end_to_end_vector)
+
+            Rees.append(mag)
+
+        average_Rees = np.mean(np.array(Rees))
+
+        results['Ree'].append(average_Rees)
+
+    final_df = pd.DataFrame(results)
+
+    if output_file != '':
+        final_df.to_csv(output_file, index=False)
+        
+    return final_df
+
 def calculate_gyration_tensor(df, burn_in=50, block_size=10, confidence_interval=0.95, output_file="", average=True):
     
     """
@@ -632,25 +684,18 @@ def extract_interfacial_width_from_domain_spacing(df, output_file = ''):
                 z_90_min = z[n]
                 break
             
-    data = []
-    with open(output_file, 'r', newline='') as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            data.append(row)
-            
-    for row in data:
-        row['InterfacialWidth'] = abs(z_90_min - z_90_max)
-        break
+    Interfacial_Width = abs(z_90_min - z_90_max)
     
     with open(output_file, 'w', newline='') as file:
-        field_names = list(data[0].keys())
-        writer = csv.DictWriter(file, fieldnames=field_names)
-        
-        writer.writeheader()
-        writer.writerows(data)
+        csv_writer = csv.writer(file)
+
+        csv_writer.writerow(['Interfacial Width'])
+
+        csv_writer.writerow([Interfacial_Width])
+
 
    
-def generate_structure_factor(df, q_cutoff=3, output_file=''):
+def generate_structure_factor(df, q_cutoff=0.5, output_file=''):
     """ 
     Returns the structure factors for a simulation of diblock copolymers. It is
     important to note this is a very time intensive calculation and doing it over 
@@ -1207,8 +1252,5 @@ def write_lammp_input_file(file, num_chains, monomers_per_chain, bond_length, de
         INPUT_FILE.write("%8i %3f\n" % (1, 1.0))
         INPUT_FILE.write("%8i %3f" % (2, 1.0))
         
-
-
-
 
 

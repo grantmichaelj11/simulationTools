@@ -1,0 +1,1 @@
+Polymertools contains a series of functions designed to make postprocessing of LAMMPs simulations faster. It was specifically designed for particle-based coarse-grained block copolymer melts and helical polymers.
